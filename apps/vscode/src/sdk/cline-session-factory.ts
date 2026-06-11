@@ -706,8 +706,8 @@ export async function buildSessionConfig(input: SessionConfigInput): Promise<Cor
 		...(cloudProviderConfig ?? {}),
 		providerId: sdkProviderId,
 		modelId,
-		...(apiKey ? { apiKey } : {}),
-		...(baseUrl !== undefined ? { baseUrl } : {}),
+        ...(apiKey ? { apiKey } : {}),
+        ...(baseUrl !== undefined ? { baseUrl } : {}),
 		fetch,
 	}
 
