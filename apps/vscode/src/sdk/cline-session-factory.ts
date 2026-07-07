@@ -17,12 +17,14 @@ import {
 	resolveProviderApiKeyFromSettings,
 	type StartSessionResult,
 } from "@cline/core"
-import { getGeneratedModelsForProvider, MODEL_COLLECTIONS_BY_PROVIDER_ID } from "@cline/llms"
+import type { ModelInfo as SdkModelInfo } from "@cline/llms"
+import { getGeneratedModelsForProvider, getModelsForProvider, MODEL_COLLECTIONS_BY_PROVIDER_ID } from "@cline/llms"
 import { buildClineSystemPrompt } from "@cline/shared"
-import type { ApiConfiguration } from "@shared/api"
+import type { ApiConfiguration, ModelInfo as UiModelInfo } from "@shared/api"
 import { ClineClient } from "@shared/cline"
 import type { HistoryItem } from "@shared/HistoryItem"
 import { DEFAULT_LANGUAGE_SETTINGS, getLanguageKey, type LanguageDisplay } from "@shared/Languages"
+import { ApiFormat as ProtoApiFormat } from "@shared/proto/cline/models"
 import { Logger } from "@shared/services/Logger"
 import type { Settings } from "@shared/storage/state-keys"
 import type { Mode } from "@shared/storage/types"
@@ -37,7 +39,10 @@ import { FeatureFlag } from "@/shared/services/feature-flags/feature-flags"
 import { type BedrockProviderConfig, buildBedrockProviderConfig } from "./bedrock-config"
 import { buildAgentHooks } from "./hooks-adapter"
 import { readTaskHistory, resolveDataDir } from "./legacy-state-reader"
+import type { ResolvedModelSelection } from "./model-catalog/contracts"
+import { parseProviderId } from "./model-catalog/provider-id"
 import { toSdkProviderId } from "./model-catalog/sdk-provider-id"
+import { createProviderConfigStore, resolveRuntimeModelSelection } from "./model-catalog/store"
 import { getProviderSettingsManager } from "./provider-migration"
 import { buildSapProviderConfig, type SapProviderConfig } from "./sap-config"
 import type { SdkSessionHost } from "./session-host"
@@ -230,10 +235,87 @@ function resolveOcaReasoningConfig(mode: Mode, apiConfig: ApiConfiguration | und
 	return isReasoningEffort(effort) ? { thinking: true, reasoningEffort: effort } : undefined
 }
 
+function finiteNumber(value: unknown): number | undefined {
+	return typeof value === "number" && Number.isFinite(value) ? value : undefined
+}
+
+function positiveFiniteNumber(value: unknown): number | undefined {
+	const number = finiteNumber(value)
+	return number !== undefined && number > 0 ? number : undefined
+}
+
+function setModelOptionNumber(value: unknown): number | undefined {
+	const number = finiteNumber(value)
+	return number !== undefined && number !== -1 ? number : undefined
+}
+
 function resolveOpenAiCompatibleMaxTokens(config: ApiConfiguration | undefined, mode: Mode): number | undefined {
 	const modelInfo = mode === "plan" ? config?.planModeOpenAiModelInfo : config?.actModeOpenAiModelInfo
-	const maxTokens = modelInfo?.maxTokens
-	return typeof maxTokens === "number" && Number.isFinite(maxTokens) && maxTokens > 0 ? maxTokens : undefined
+	return positiveFiniteNumber(modelInfo?.maxTokens)
+}
+
+function toSdkApiFormat(apiFormat: UiModelInfo["apiFormat"]): SdkModelInfo["apiFormat"] | undefined {
+	switch (apiFormat) {
+		case ProtoApiFormat.R1_CHAT:
+			return "r1"
+		case ProtoApiFormat.OPENAI_RESPONSES:
+			return "openai-responses"
+		case ProtoApiFormat.OPENAI_CHAT:
+			return "default"
+		default:
+			return undefined
+	}
+}
+
+function toSdkModelInfo(selection: ResolvedModelSelection): SdkModelInfo {
+	const modelInfo = selection.modelInfo
+	const capabilities = new Set<string>()
+	if (modelInfo.supportsImages) capabilities.add("images")
+	if (modelInfo.supportsPromptCache) capabilities.add("prompt-cache")
+	if (modelInfo.supportsReasoning) capabilities.add("reasoning")
+	for (const capability of selection.overrides?.capabilities ?? []) {
+		capabilities.add(capability)
+	}
+	return {
+		id: selection.modelId,
+		name: modelInfo.name ?? selection.modelId,
+		maxTokens: modelInfo.maxTokens,
+		contextWindow: modelInfo.contextWindow,
+		maxInputTokens: selection.overrides?.maxInputTokens,
+		capabilities: capabilities.size > 0 ? ([...capabilities] as SdkModelInfo["capabilities"]) : undefined,
+		apiFormat: toSdkApiFormat(modelInfo.apiFormat),
+		temperature: modelInfo.temperature,
+		pricing:
+			modelInfo.inputPrice !== undefined ||
+			modelInfo.outputPrice !== undefined ||
+			modelInfo.cacheReadsPrice !== undefined ||
+			modelInfo.cacheWritesPrice !== undefined
+				? {
+						input: modelInfo.inputPrice,
+						output: modelInfo.outputPrice,
+						cacheRead: modelInfo.cacheReadsPrice,
+						cacheWrite: modelInfo.cacheWritesPrice,
+					}
+				: undefined,
+	}
+}
+
+function resolveCommittedRuntimeModel(
+	providerId: string,
+	mode: Mode,
+	modelId: string | undefined,
+): ResolvedModelSelection | undefined {
+	if (!modelId) {
+		return undefined
+	}
+	try {
+		const parsedProviderId = parseProviderId(providerId)
+		const selection = createProviderConfigStore().readSelection(parsedProviderId, mode)
+		return selection?.modelId === modelId ? selection : resolveRuntimeModelSelection(parsedProviderId, modelId)
+	} catch (error) {
+		Logger.warn(`[SessionFactory] Failed to resolve committed model settings for provider=${providerId}:`, error)
+		return undefined
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -634,7 +716,12 @@ export async function buildSessionConfig(input: SessionConfigInput): Promise<Cor
 		apiKey = resolveApiKey(providerId, apiConfig)
 	}
 	apiKey = apiKey ?? ""
-	const maxTokensPerTurn = providerId === "openai" ? resolveOpenAiCompatibleMaxTokens(apiConfig, mode) : undefined
+	const committedRuntimeModel = resolveCommittedRuntimeModel(providerId, mode, modelId)
+	const overriddenMaxTokens = committedRuntimeModel?.overrides?.maxTokens
+	const maxTokensPerTurn =
+		positiveFiniteNumber(overriddenMaxTokens) ??
+		(providerId === "openai" ? resolveOpenAiCompatibleMaxTokens(apiConfig, mode) : undefined)
+	const temperature = setModelOptionNumber(committedRuntimeModel?.overrides?.temperature)
 	const reasoningConfig =
 		providerId === "oca"
 			? (resolveOcaReasoningConfig(mode, apiConfig) ?? resolveProviderReasoningConfig(providerId))
@@ -693,6 +780,23 @@ export async function buildSessionConfig(input: SessionConfigInput): Promise<Cor
 	const sdkProviderId = toSdkProviderId(providerId)
 	const hostIdentity = await resolveHostIdentity()
 	const isMultiRoot = await resolveIsMultiRootWorkspace()
+	let knownModels: Awaited<ReturnType<typeof getModelsForProvider>> | undefined
+	try {
+		// Constructing the settings manager loads providers.json and models.json into
+		// the @cline/llms registry. Reading models from that registry ensures custom
+		// model overrides are included in the inference provider config, not just in
+		// the webview/display path.
+		getProviderSettingsManager(resolveDataDir())
+		knownModels = await getModelsForProvider(sdkProviderId)
+		if (committedRuntimeModel) {
+			knownModels = {
+				...(knownModels ?? {}),
+				[modelId]: toSdkModelInfo(committedRuntimeModel),
+			}
+		}
+	} catch (error) {
+		Logger.warn(`[SessionFactory] Failed to resolve known models for provider=${sdkProviderId}:`, error)
+	}
 
 	// Always pass a providerConfig so the proxy/CA-aware fetch reaches the SDK
 	// gateway; without it the agent loop uses bare global fetch and corporate
@@ -708,6 +812,7 @@ export async function buildSessionConfig(input: SessionConfigInput): Promise<Cor
 		modelId,
 		...(apiKey ? { apiKey } : {}),
 		...(baseUrl !== undefined ? { baseUrl } : {}),
+		...(knownModels && Object.keys(knownModels).length > 0 ? { knownModels } : {}),
 		fetch,
 	}
 
@@ -738,6 +843,7 @@ export async function buildSessionConfig(input: SessionConfigInput): Promise<Cor
 		mode: mode === "plan" ? "plan" : "act",
 		...reasoningConfig,
 		...(maxTokensPerTurn !== undefined ? { maxTokensPerTurn } : {}),
+		...(temperature !== undefined ? { temperature } : {}),
 		maxIterations: undefined,
 		logger: sdkLogger,
 		extensionContext: {

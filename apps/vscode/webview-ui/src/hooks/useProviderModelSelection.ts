@@ -1,10 +1,45 @@
 import { type ModelInfo, openAiModelInfoSafeDefaults } from "@shared/api"
-import type { ProviderConfigResponse } from "@shared/proto/cline/models"
+import { ApiFormat, type ProviderConfigResponse } from "@shared/proto/cline/models"
 import { fromProtobufModelInfo } from "@shared/proto-conversions/models/typeConversion"
 import type { Mode } from "@shared/storage/types"
 import { useCallback } from "react"
 import type { ProviderId } from "@/context/ExtensionStateContext"
 import type { ProviderModelSelection } from "./useProviderConfig"
+
+type ProviderModelSelectionInput =
+	| (Omit<ProviderModelSelection, "providerId"> & { modelInfo?: ModelInfo })
+	| (ProviderModelSelection & { modelInfo?: ModelInfo })
+
+interface DisplayProviderModelSelection extends ProviderModelSelection {
+	modelInfo: ModelInfo
+}
+
+export function modelInfoToProviderModelOverrides(
+	modelInfo: ModelInfo | undefined,
+): ProviderModelSelection["overrides"] | undefined {
+	if (!modelInfo) {
+		return undefined
+	}
+	const capabilities = new Set<string>()
+	if (modelInfo.supportsImages) capabilities.add("images")
+	if (modelInfo.supportsPromptCache) capabilities.add("prompt-cache")
+	if (modelInfo.supportsReasoning) capabilities.add("reasoning")
+	return {
+		...(modelInfo.name !== undefined ? { name: modelInfo.name } : {}),
+		...(modelInfo.maxTokens !== undefined ? { maxTokens: modelInfo.maxTokens } : {}),
+		...(modelInfo.contextWindow !== undefined ? { contextWindow: modelInfo.contextWindow } : {}),
+		...(capabilities.size > 0 ? { capabilities: [...capabilities] } : {}),
+		...(modelInfo.supportsImages !== undefined ? { supportsVision: modelInfo.supportsImages } : {}),
+		...(modelInfo.supportsReasoning !== undefined ? { supportsReasoning: modelInfo.supportsReasoning } : {}),
+		...(modelInfo.inputPrice !== undefined ? { inputPrice: modelInfo.inputPrice } : {}),
+		...(modelInfo.outputPrice !== undefined ? { outputPrice: modelInfo.outputPrice } : {}),
+		...(modelInfo.cacheReadsPrice !== undefined ? { cacheReadsPrice: modelInfo.cacheReadsPrice } : {}),
+		...(modelInfo.cacheWritesPrice !== undefined ? { cacheWritesPrice: modelInfo.cacheWritesPrice } : {}),
+		...(modelInfo.temperature !== undefined && modelInfo.temperature !== -1 ? { temperature: modelInfo.temperature } : {}),
+		...(modelInfo.apiFormat !== undefined ? { apiFormat: modelInfo.apiFormat } : {}),
+		...(modelInfo.apiFormat === ApiFormat.R1_CHAT ? { isR1FormatRequired: true } : {}),
+	}
+}
 
 interface UseProviderModelSelectionOptions {
 	models: Record<string, ModelInfo>
@@ -36,20 +71,24 @@ export function useProviderModelSelection(
 			(selectedModelId && customModelInfo ? customModelInfo(selectedModelId) : undefined) ??
 			fallbackModelInfo)
 
-	const selectedModel: ProviderModelSelection = {
+	const selectedModel: DisplayProviderModelSelection = {
 		providerId,
 		modelId: selectedModelId,
 		modelInfo: selectedModelInfo,
 	}
 
 	const commitModelSelection = useCallback(
-		(selection: Omit<ProviderModelSelection, "providerId"> | ProviderModelSelection) => {
+		(selection: ProviderModelSelectionInput) => {
+			const modelId = selection.modelId
+			const overrides =
+				selection.overrides ?? (models[modelId] ? undefined : modelInfoToProviderModelOverrides(selection.modelInfo))
 			return commitSelection(currentMode, {
-				...selection,
 				providerId,
+				modelId,
+				...(overrides !== undefined ? { overrides } : {}),
 			})
 		},
-		[commitSelection, currentMode, providerId],
+		[commitSelection, currentMode, models, providerId],
 	)
 
 	return {

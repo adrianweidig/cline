@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 import type { EffectiveProviderConfig, ProviderCatalog, ProviderConfigStore } from "@/sdk/model-catalog/contracts"
 import { computeConfigFingerprint } from "@/sdk/model-catalog/fingerprint"
 import { parseProviderId } from "@/sdk/model-catalog/provider-id"
-import { ApiFormat, OpenRouterModelInfo } from "@/shared/proto/cline/models"
+import { ApiFormat, ModelOverrides } from "@/shared/proto/cline/models"
 import type { ProviderCatalogController } from "../providerCatalogShared"
 
 type TestStateManager = {
@@ -210,7 +210,7 @@ describe("provider model catalog handlers", () => {
 		expect(store.write).toHaveBeenCalledWith(providerId, { headers: {} })
 	})
 
-	it("commitModelSelection validates mode and commits the full selection envelope", async () => {
+	it("commitModelSelection validates mode and commits model settings", async () => {
 		const { commitModelSelection } = await import("../commitModelSelection")
 		const providerId = parseProviderId("deepseek")
 		const store = makeStore({ providerId })
@@ -224,22 +224,20 @@ describe("provider model catalog handlers", () => {
 			providerId: "deepseek",
 			mode: "act",
 			modelId: "deepseek-v4-flash",
-			modelInfo: OpenRouterModelInfo.create({
+			overrides: ModelOverrides.create({
 				name: "DeepSeek V4 Flash",
 				contextWindow: 456,
-				supportsPromptCache: true,
-				apiFormat: ApiFormat.OPENAI_CHAT,
+				capabilities: ["prompt-cache"],
 			}),
 		})
 
 		expect(store.commitSelection).toHaveBeenCalledWith(providerId, "act", {
 			providerId,
 			modelId: "deepseek-v4-flash",
-			modelInfo: expect.objectContaining({
+			overrides: expect.objectContaining({
 				name: "DeepSeek V4 Flash",
 				contextWindow: 456,
-				supportsPromptCache: true,
-				apiFormat: ApiFormat.OPENAI_CHAT,
+				capabilities: ["prompt-cache"],
 			}),
 		})
 		expect(stateManager.setGlobalStateBatch).toHaveBeenCalledWith({
@@ -268,10 +266,7 @@ describe("provider model catalog handlers", () => {
 			providerId: "deepseek",
 			mode: "act",
 			modelId: "deepseek-v4-flash",
-			modelInfo: OpenRouterModelInfo.create({
-				name: "DeepSeek V4 Flash",
-				apiFormat: ApiFormat.OPENAI_CHAT,
-			}),
+			overrides: ModelOverrides.create({ name: "DeepSeek V4 Flash" }),
 		})
 
 		expect(handleApiConfigurationChanged).toHaveBeenCalledWith({}, { actModeApiProvider: "deepseek" })
@@ -289,7 +284,7 @@ describe("provider model catalog handlers", () => {
 				providerId: "deepseek",
 				mode: "invalid",
 				modelId: "deepseek-v4-flash",
-				modelInfo: OpenRouterModelInfo.create({ supportsPromptCache: true }),
+				overrides: ModelOverrides.create({ capabilities: ["prompt-cache"] }),
 			}),
 		).rejects.toThrow('mode must be "plan" or "act"')
 		expect(store.commitSelection).not.toHaveBeenCalled()

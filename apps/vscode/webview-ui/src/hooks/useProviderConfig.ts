@@ -3,15 +3,14 @@ import {
 	type AwsProviderConfig,
 	CommitModelSelectionRequest,
 	type GcpProviderConfig,
+	ModelOverrides,
 	type ProviderConfigResponse,
 	WriteProviderConfigPatch,
 	WriteProviderConfigRequest,
 } from "@shared/proto/cline/models"
-import { toProtobufModelInfo } from "@shared/proto-conversions/models/typeConversion"
 import { useCallback, useEffect, useState } from "react"
 import type { ProviderId } from "@/context/ExtensionStateContext"
 import { ModelsServiceClient } from "@/services/grpc-client"
-import type { ModelInfo } from "../../../src/shared/api"
 
 export type ProviderConfigWritePatch = Partial<Omit<WriteProviderConfigPatch, "headers" | "aws" | "gcp">> & {
 	headers?: Record<string, string>
@@ -22,7 +21,7 @@ export type ProviderConfigWritePatch = Partial<Omit<WriteProviderConfigPatch, "h
 export interface ProviderModelSelection {
 	providerId: ProviderId
 	modelId: string
-	modelInfo: ModelInfo
+	overrides?: Partial<Omit<ModelOverrides, "capabilities">> & { capabilities?: string[] }
 }
 
 function toWriteProviderConfigPatch(patch: ProviderConfigWritePatch): WriteProviderConfigPatch {
@@ -74,7 +73,7 @@ export function useProviderConfig(providerId: ProviderId) {
 					providerId,
 					mode,
 					modelId: selection.modelId,
-					modelInfo: toProtobufModelInfo(selection.modelInfo),
+					overrides: selection.overrides ? ModelOverrides.create(selection.overrides) : undefined,
 				}),
 			)
 			await read()

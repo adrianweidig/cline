@@ -57,7 +57,7 @@ describe("useProviderConfig", () => {
 		expect(result.current.config?.baseUrl).toBe("https://custom.example/v1")
 	})
 
-	it("commitSelection sends the full selection envelope and refreshes config", async () => {
+	it("commitSelection sends model settings and refreshes config", async () => {
 		vi.mocked(ModelsServiceClient.readProviderConfig)
 			.mockResolvedValueOnce(config())
 			.mockResolvedValueOnce(
@@ -87,7 +87,7 @@ describe("useProviderConfig", () => {
 			await result.current.commitSelection("act", {
 				providerId: "deepseek",
 				modelId: "deepseek-v4-flash",
-				modelInfo: { name: "DeepSeek V4 Flash", supportsPromptCache: true, apiFormat: ApiFormat.OPENAI_CHAT },
+				overrides: { name: "DeepSeek V4 Flash", capabilities: ["prompt-cache"] },
 			})
 		})
 
@@ -96,10 +96,9 @@ describe("useProviderConfig", () => {
 				providerId: "deepseek",
 				mode: "act",
 				modelId: "deepseek-v4-flash",
-				modelInfo: expect.objectContaining({
+				overrides: expect.objectContaining({
 					name: "DeepSeek V4 Flash",
-					supportsPromptCache: true,
-					apiFormat: ApiFormat.OPENAI_CHAT,
+					capabilities: ["prompt-cache"],
 				}),
 			}),
 		)
@@ -116,7 +115,6 @@ describe("useProviderConfig", () => {
 			result.current.commitSelection("act", {
 				providerId: "openrouter",
 				modelId: "deepseek-v4-flash",
-				modelInfo: { supportsPromptCache: true },
 			}),
 		).rejects.toThrow("selection providerId openrouter does not match hook providerId deepseek")
 		expect(ModelsServiceClient.commitModelSelection).not.toHaveBeenCalled()

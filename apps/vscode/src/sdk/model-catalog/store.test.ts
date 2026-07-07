@@ -1,4 +1,5 @@
 import type { ApiConfiguration, ModelInfo } from "@shared/api"
+import { ApiFormat } from "@shared/proto/cline/models"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import type { ProviderConfigChange } from "./contracts"
 import { parseProviderId } from "./provider-id"
@@ -7,6 +8,10 @@ const mocks = vi.hoisted(() => {
 	type MockApiConfiguration = ApiConfiguration & { planActSeparateModelsSetting?: boolean }
 	let apiConfiguration: MockApiConfiguration = {}
 	let providerSettingsById: Record<string, Record<string, unknown>> = {}
+	let modelsFile: { version: 1; providers: Record<string, { models?: Record<string, Record<string, unknown>> }> } = {
+		version: 1,
+		providers: {},
+	}
 	const saveProviderSettings = vi.fn((settings: Record<string, unknown>, _options?: { setLastUsed?: boolean }) => {
 		const provider = settings.provider
 		if (typeof provider !== "string") {
@@ -20,6 +25,7 @@ const mocks = vi.hoisted(() => {
 		reset(): void {
 			apiConfiguration = {}
 			providerSettingsById = {}
+			modelsFile = { version: 1, providers: {} }
 			saveProviderSettings.mockClear()
 		},
 		setApiConfiguration(value: MockApiConfiguration): void {
@@ -36,6 +42,12 @@ const mocks = vi.hoisted(() => {
 		},
 		getSaveProviderSettingsMock(): typeof saveProviderSettings {
 			return saveProviderSettings
+		},
+		getModelsFile() {
+			return modelsFile
+		},
+		setModelsFile(value: typeof modelsFile): void {
+			modelsFile = value
 		},
 		getStateManager() {
 			return {
@@ -69,11 +81,24 @@ vi.mock("../provider-migration", () => ({
 	getProviderSettingsManager: mocks.getProviderSettingsManager,
 }))
 
+vi.mock("@cline/core", () => ({
+	ensureCustomProvidersLoadedSync: vi.fn(),
+	readModelsFileSync: vi.fn(() => mocks.getModelsFile()),
+	resolveModelsRegistryPath: vi.fn(() => "/tmp/models.json"),
+	writeModelsFileSync: vi.fn((_filePath: string, state: ReturnType<typeof mocks.getModelsFile>) => mocks.setModelsFile(state)),
+}))
+
+vi.mock("@cline/llms", () => ({
+	getGeneratedModelsForProvider: vi.fn(() => ({})),
+	MODEL_COLLECTIONS_BY_PROVIDER_ID: {},
+}))
+
 const modelInfoA: ModelInfo = {
 	name: "Model A",
 	contextWindow: 128_000,
 	maxTokens: 8_192,
 	supportsPromptCache: true,
+	apiFormat: ApiFormat.OPENAI_RESPONSES,
 }
 
 const modelInfoB: ModelInfo = {
@@ -81,6 +106,37 @@ const modelInfoB: ModelInfo = {
 	contextWindow: 64_000,
 	maxTokens: 4_096,
 	supportsPromptCache: false,
+}
+
+function selectionFromModelInfo(providerId: ReturnType<typeof parseProviderId>, modelId: string, modelInfo: ModelInfo) {
+	const capabilities: string[] = []
+	if (modelInfo.supportsPromptCache) capabilities.push("prompt-cache")
+	if (modelInfo.supportsImages) capabilities.push("images")
+	if (modelInfo.supportsReasoning) capabilities.push("reasoning")
+	return {
+		providerId,
+		modelId,
+		overrides: {
+			name: modelInfo.name,
+			contextWindow: modelInfo.contextWindow,
+			maxTokens: modelInfo.maxTokens,
+			...(modelInfo.apiFormat !== undefined ? { apiFormat: modelInfo.apiFormat } : {}),
+			...(capabilities.length > 0 ? { capabilities } : {}),
+		},
+	}
+}
+
+function expectResolvedSelection(
+	actual: unknown,
+	selection: ReturnType<typeof selectionFromModelInfo>,
+	modelInfo: ModelInfo,
+): void {
+	expect(actual).toMatchObject({
+		providerId: selection.providerId,
+		modelId: selection.modelId,
+		overrides: selection.overrides,
+		modelInfo,
+	})
 }
 
 describe("createProviderConfigStore", () => {
@@ -121,22 +177,29 @@ describe("createProviderConfigStore", () => {
 		const { createProviderConfigStore } = await import("./store")
 		const store = createProviderConfigStore()
 		const providerId = parseProviderId("openrouter")
-		const selection = { providerId, modelId: "anthropic/claude-sonnet-4", modelInfo: modelInfoA }
+		const selection = selectionFromModelInfo(providerId, "anthropic/claude-sonnet-4", modelInfoA)
 
 		store.commitSelection(providerId, "act", selection)
 
-		expect(store.readSelection(providerId, "act")).toEqual(selection)
+		expectResolvedSelection(store.readSelection(providerId, "act"), selection, modelInfoA)
+		expect(mocks.getModelsFile().providers.openrouter?.models?.["anthropic/claude-sonnet-4"]).toMatchObject({
+			name: "Model A",
+			contextWindow: 128_000,
+			maxTokens: 8_192,
+			apiFormat: "openai-responses",
+			capabilities: ["prompt-cache"],
+		})
 	})
 
 	it("round-trips generic provider selections using the in-process modelInfo envelope", async () => {
 		const { createProviderConfigStore } = await import("./store")
 		const store = createProviderConfigStore()
 		const providerId = parseProviderId("deepseek")
-		const selection = { providerId, modelId: "deepseek-v4-pro", modelInfo: modelInfoA }
+		const selection = selectionFromModelInfo(providerId, "deepseek-v4-pro", modelInfoA)
 
 		store.commitSelection(providerId, "act", selection)
 
-		expect(store.readSelection(providerId, "act")).toEqual(selection)
+		expectResolvedSelection(store.readSelection(providerId, "act"), selection, modelInfoA)
 	})
 
 	it("hydrates a generic provider selection from providers.json after reload", async () => {
@@ -160,27 +223,27 @@ describe("createProviderConfigStore", () => {
 		const store = createProviderConfigStore()
 		const geminiProviderId = parseProviderId("gemini")
 		const deepSeekProviderId = parseProviderId("deepseek")
-		const geminiSelection = { providerId: geminiProviderId, modelId: "gemini-3.1-pro-preview", modelInfo: modelInfoA }
-		const deepSeekSelection = { providerId: deepSeekProviderId, modelId: "deepseek-v4-pro", modelInfo: modelInfoB }
+		const geminiSelection = selectionFromModelInfo(geminiProviderId, "gemini-3.1-pro-preview", modelInfoA)
+		const deepSeekSelection = selectionFromModelInfo(deepSeekProviderId, "deepseek-v4-pro", modelInfoB)
 
 		store.commitSelection(geminiProviderId, "act", geminiSelection)
 		store.commitSelection(deepSeekProviderId, "act", deepSeekSelection)
 
-		expect(store.readSelection(geminiProviderId, "act")).toEqual(geminiSelection)
-		expect(store.readSelection(deepSeekProviderId, "act")).toEqual(deepSeekSelection)
+		expectResolvedSelection(store.readSelection(geminiProviderId, "act"), geminiSelection, modelInfoA)
+		expectResolvedSelection(store.readSelection(deepSeekProviderId, "act"), deepSeekSelection, modelInfoB)
 	})
 
 	it("handles normalized nousResearch provider casing for writes and selections", async () => {
 		const { createProviderConfigStore } = await import("./store")
 		const store = createProviderConfigStore()
 		const providerId = parseProviderId("nousResearch")
-		const selection = { providerId, modelId: "nousresearch/hermes-4-70b", modelInfo: modelInfoA }
+		const selection = selectionFromModelInfo(providerId, "nousresearch/hermes-4-70b", modelInfoA)
 
 		const written = store.write(providerId, { apiKey: "nous-key" })
 		store.commitSelection(providerId, "act", selection)
 
 		expect(written).toEqual({ providerId, apiKey: "nous-key" })
-		expect(store.readSelection(providerId, "act")).toEqual(selection)
+		expectResolvedSelection(store.readSelection(providerId, "act"), selection, modelInfoA)
 		expect(mocks.getSavedProviderSettings("nousResearch")).toMatchObject({
 			provider: "nousResearch",
 			apiKey: "nous-key",
@@ -237,7 +300,7 @@ describe("createProviderConfigStore", () => {
 		})
 		const store = createProviderConfigStore()
 		const providerId = parseProviderId("openai")
-		const selection = { providerId, modelId: "gpt-oss-120b", modelInfo: modelInfoA }
+		const selection = selectionFromModelInfo(providerId, "gpt-oss-120b", modelInfoA)
 
 		store.commitSelection(providerId, "act", selection)
 
@@ -245,6 +308,24 @@ describe("createProviderConfigStore", () => {
 			provider: "openai-compatible",
 			apiKey: "migrated-openai-compatible-key",
 			model: "gpt-oss-120b",
+		})
+	})
+
+	it("preserves per-model OpenAI Compatible overrides when switching models without new overrides", async () => {
+		const { createProviderConfigStore } = await import("./store")
+		const store = createProviderConfigStore()
+		const providerId = parseProviderId("openai")
+		const modelASelection = selectionFromModelInfo(providerId, "model-a", modelInfoA)
+
+		store.commitSelection(providerId, "act", modelASelection)
+		store.commitSelection(providerId, "act", { providerId, modelId: "model-b" })
+		store.commitSelection(providerId, "act", { providerId, modelId: "model-a" })
+
+		expectResolvedSelection(store.readSelection(providerId, "act"), modelASelection, modelInfoA)
+		expect(mocks.getModelsFile().providers["openai-compatible"]?.models?.["model-a"]).toMatchObject({
+			name: "Model A",
+			maxTokens: 8_192,
+			contextWindow: 128_000,
 		})
 	})
 
@@ -259,14 +340,14 @@ describe("createProviderConfigStore", () => {
 		})
 		const store = createProviderConfigStore()
 		const providerId = parseProviderId("openai")
-		const planSelection = { providerId, modelId: "plan-openai-model", modelInfo: modelInfoA }
-		const actSelection = { providerId, modelId: "act-openai-model", modelInfo: modelInfoB }
+		const planSelection = selectionFromModelInfo(providerId, "plan-openai-model", modelInfoA)
+		const actSelection = selectionFromModelInfo(providerId, "act-openai-model", modelInfoB)
 
 		store.commitSelection(providerId, "plan", planSelection)
 		store.commitSelection(providerId, "act", actSelection)
 
-		expect(store.readSelection(providerId, "plan")).toEqual(planSelection)
-		expect(store.readSelection(providerId, "act")).toEqual(actSelection)
+		expectResolvedSelection(store.readSelection(providerId, "plan"), planSelection, modelInfoA)
+		expectResolvedSelection(store.readSelection(providerId, "act"), actSelection, modelInfoB)
 		expect(mocks.getApiConfiguration()).toMatchObject({
 			planModeOpenAiModelId: "plan-openai-model",
 			planModeOpenAiModelInfo: modelInfoA,
@@ -286,12 +367,12 @@ describe("createProviderConfigStore", () => {
 		mocks.setApiConfiguration({ planActSeparateModelsSetting: false })
 		const store = createProviderConfigStore()
 		const providerId = parseProviderId("openai")
-		const selection = { providerId, modelId: "shared-openai-model", modelInfo: modelInfoA }
+		const selection = selectionFromModelInfo(providerId, "shared-openai-model", modelInfoA)
 
 		store.commitSelection(providerId, "act", selection)
 
-		expect(store.readSelection(providerId, "plan")).toEqual(selection)
-		expect(store.readSelection(providerId, "act")).toEqual(selection)
+		expectResolvedSelection(store.readSelection(providerId, "plan"), selection, modelInfoA)
+		expectResolvedSelection(store.readSelection(providerId, "act"), selection, modelInfoA)
 		expect(mocks.getApiConfiguration()).toMatchObject({
 			planModeOpenAiModelId: "shared-openai-model",
 			planModeOpenAiModelInfo: modelInfoA,
@@ -337,14 +418,14 @@ describe("createProviderConfigStore", () => {
 		mocks.setApiConfiguration({ planActSeparateModelsSetting: true })
 		const store = createProviderConfigStore()
 		const providerId = parseProviderId("openrouter")
-		const planSelection = { providerId, modelId: "provider/model-a", modelInfo: modelInfoA }
-		const actSelection = { providerId, modelId: "provider/model-b", modelInfo: modelInfoB }
+		const planSelection = selectionFromModelInfo(providerId, "provider/model-a", modelInfoA)
+		const actSelection = selectionFromModelInfo(providerId, "provider/model-b", modelInfoB)
 
 		store.commitSelection(providerId, "plan", planSelection)
 		store.commitSelection(providerId, "act", actSelection)
 
-		expect(store.readSelection(providerId, "plan")).toEqual(planSelection)
-		expect(store.readSelection(providerId, "act")).toEqual(actSelection)
+		expectResolvedSelection(store.readSelection(providerId, "plan"), planSelection, modelInfoA)
+		expectResolvedSelection(store.readSelection(providerId, "act"), actSelection, modelInfoB)
 		expect(mocks.getSavedProviderSettings("openrouter")).toMatchObject({
 			provider: "openrouter",
 			model: "provider/model-b",
@@ -361,7 +442,7 @@ describe("createProviderConfigStore", () => {
 		})
 		const store = createProviderConfigStore()
 		const providerId = parseProviderId("openrouter")
-		const selection = { providerId, modelId: "provider/model-a", modelInfo: modelInfoA }
+		const selection = selectionFromModelInfo(providerId, "provider/model-a", modelInfoA)
 
 		store.commitSelection(providerId, "act", selection)
 
@@ -381,7 +462,7 @@ describe("createProviderConfigStore", () => {
 		const { createProviderConfigStore } = await import("./store")
 		const store = createProviderConfigStore()
 		const providerId = parseProviderId("claude-code")
-		const selection = { providerId, modelId: "haiku", modelInfo: modelInfoA }
+		const selection = selectionFromModelInfo(providerId, "haiku", modelInfoA)
 
 		store.commitSelection(providerId, "act", selection)
 
@@ -423,7 +504,7 @@ describe("createProviderConfigStore", () => {
 		const store = createProviderConfigStore()
 		const providerId = parseProviderId("openrouter")
 		const events: ProviderConfigChange[] = []
-		const selection = { providerId, modelId: "provider/model-a", modelInfo: modelInfoA }
+		const selection = selectionFromModelInfo(providerId, "provider/model-a", modelInfoA)
 
 		store.subscribe((event) => events.push(event))
 		store.write(providerId, { apiKey: "openrouter-key" })
@@ -431,7 +512,12 @@ describe("createProviderConfigStore", () => {
 
 		expect(events.map((event) => event.kind)).toEqual(["fields", "selection"])
 		expect(events[0]).toMatchObject({ kind: "fields", providerId })
-		expect(events[1]).toEqual({ kind: "selection", providerId, mode: "act", selection })
+		expect(events[1]).toEqual({
+			kind: "selection",
+			providerId,
+			mode: "act",
+			selection: store.readSelection(providerId, "act"),
+		})
 	})
 
 	it("dispose unregisters listeners", async () => {

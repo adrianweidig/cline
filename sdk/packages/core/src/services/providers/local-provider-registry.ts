@@ -3,6 +3,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import * as LlmsModels from "@cline/llms";
 import {
+	ApiFormatSchema,
 	type ModelCapability,
 	ModelCapabilitySchema,
 	type ModelInfo,
@@ -32,6 +33,13 @@ export const StoredModelEntrySchema = z
 		supportsVision: z.boolean().optional(),
 		supportsAttachments: z.boolean().optional(),
 		supportsReasoning: z.boolean().optional(),
+		inputPrice: z.number().optional(),
+		outputPrice: z.number().optional(),
+		cacheReadsPrice: z.number().optional(),
+		cacheWritesPrice: z.number().optional(),
+		temperature: z.number().optional(),
+		apiFormat: ApiFormatSchema.optional(),
+		isR1FormatRequired: z.boolean().optional(),
 	})
 	.passthrough();
 
@@ -256,6 +264,20 @@ function toStoredModelInfo(
 		contextWindow: model?.contextWindow,
 		maxInputTokens: model?.maxInputTokens,
 		capabilities: capabilities.size > 0 ? [...capabilities] : undefined,
+		temperature: model?.temperature,
+		apiFormat: model?.isR1FormatRequired ? "r1" : model?.apiFormat,
+		pricing:
+			model?.inputPrice !== undefined ||
+			model?.outputPrice !== undefined ||
+			model?.cacheReadsPrice !== undefined ||
+			model?.cacheWritesPrice !== undefined
+				? {
+						input: model.inputPrice,
+						output: model.outputPrice,
+						cacheRead: model.cacheReadsPrice,
+						cacheWrite: model.cacheWritesPrice,
+					}
+				: undefined,
 	};
 }
 

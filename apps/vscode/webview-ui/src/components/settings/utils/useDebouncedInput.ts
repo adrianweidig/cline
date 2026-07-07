@@ -16,15 +16,17 @@ export function useDebouncedInput<T>(
 	debounceMs: number = 100,
 ): [T, (value: T) => void] {
 	// Local state to prevent jumpy input - initialize once
-	const [localValue, setLocalValue] = useState(initialValue)
+	const [localValue, setLocalValueState] = useState(initialValue)
 
 	// Track previous initialValue to detect external changes
 	const prevInitialValueRef = useRef<T>(initialValue)
+	const hasLocalEditRef = useRef(false)
 
 	// Sync local state when initialValue changes externally (e.g., when switching Plan/Act tabs)
 	useEffect(() => {
 		if (prevInitialValueRef.current !== initialValue) {
-			setLocalValue(initialValue)
+			hasLocalEditRef.current = false
+			setLocalValueState(initialValue)
 			prevInitialValueRef.current = initialValue
 		}
 	}, [initialValue])
@@ -32,11 +34,20 @@ export function useDebouncedInput<T>(
 	// Debounced backend save - saves after user stops changing value
 	useDebounceEffect(
 		() => {
+			if (!hasLocalEditRef.current) {
+				return
+			}
+			hasLocalEditRef.current = false
 			onChange(localValue)
 		},
 		debounceMs,
 		[localValue],
 	)
+
+	const setLocalValue = (value: T) => {
+		hasLocalEditRef.current = true
+		setLocalValueState(value)
+	}
 
 	return [localValue, setLocalValue]
 }

@@ -13,6 +13,37 @@ export interface StartSessionResult {
 
 export const MAX_COMMAND_OUTPUT_CHARS = 200_000
 
+export interface StoredModelEntry {
+	id?: string
+	name?: string
+	maxTokens?: number
+	contextWindow?: number
+	maxInputTokens?: number
+	capabilities?: string[]
+	[key: string]: unknown
+}
+
+export interface StoredModelsFile {
+	version: 1
+	providers: Record<string, { models?: Record<string, StoredModelEntry> }>
+}
+
+let modelsFile: StoredModelsFile = { version: 1, providers: {} }
+
+export function readModelsFileSync(): StoredModelsFile {
+	return modelsFile
+}
+
+export function writeModelsFileSync(_filePath: string, next: StoredModelsFile): void {
+	modelsFile = next
+}
+
+export function resolveModelsRegistryPath(): string {
+	return "/tmp/models.json"
+}
+
+export function ensureCustomProvidersLoadedSync(): void {}
+
 export type GlobalCompactionStrategy = "basic" | "agentic"
 
 export function readCompactionStrategyGlobally(): GlobalCompactionStrategy {

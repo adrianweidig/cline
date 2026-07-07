@@ -71,6 +71,12 @@ describe("models registry parsing", () => {
 						alpha: {
 							name: "Alpha",
 							capabilities: ["reasoning"],
+							inputPrice: 1.25,
+							outputPrice: 3.5,
+							cacheReadsPrice: 0.25,
+							cacheWritesPrice: 1.5,
+							temperature: 0.2,
+							isR1FormatRequired: true,
 						},
 					},
 				},
@@ -94,7 +100,18 @@ describe("models registry parsing", () => {
 		});
 		await expect(
 			LlmsModels.getModelsForProvider("schema-provider"),
-		).resolves.toHaveProperty("alpha");
+		).resolves.toMatchObject({
+			alpha: {
+				pricing: {
+					input: 1.25,
+					output: 3.5,
+					cacheRead: 0.25,
+					cacheWrite: 1.5,
+				},
+				temperature: 0.2,
+				apiFormat: "r1",
+			},
+		});
 	});
 
 	it("skips malformed provider entries while preserving valid providers", () => {

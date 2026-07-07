@@ -571,6 +571,19 @@ export type {
 } from "./services/plugin-uninstall";
 export { uninstallPlugin } from "./services/plugin-uninstall";
 export {
+	emptyModelsFile,
+	ensureCustomProvidersLoadedSync,
+	parseModelsFile,
+	readModelsFile,
+	readModelsFileSync,
+	resolveModelsRegistryPath,
+	type StoredModelEntry,
+	type StoredModelsFile,
+	type StoredProviderEntry,
+	writeModelsFile,
+	writeModelsFileSync,
+} from "./services/providers/local-provider-registry";
+export {
 	addLocalProvider,
 	type DeleteLocalProviderRequest,
 	deleteLocalProvider,

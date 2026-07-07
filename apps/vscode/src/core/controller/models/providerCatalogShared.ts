@@ -3,12 +3,14 @@ import type {
 	EffectiveProviderConfig,
 	Mode,
 	ModelSelection,
+	ModelSelectionOverrides,
 	ProviderCatalog,
 	ProviderConfigPatch,
 	ProviderConfigStore,
 	ProviderId,
 	ProviderListing,
 	ProviderModelsResult,
+	ResolvedModelSelection,
 } from "@/sdk/model-catalog/contracts"
 import { parseProviderId } from "@/sdk/model-catalog/provider-id"
 import {
@@ -17,13 +19,14 @@ import {
 	CommitModelSelectionRequest,
 	CommittedModelSelection,
 	GcpProviderConfig,
+	ModelOverrides as ModelOverridesProto,
 	OpenRouterModelInfo,
 	ProviderConfigResponse,
 	ProviderListing as ProviderListingProto,
 	ProviderModelsResponse,
 	WriteProviderConfigPatch,
 } from "@/shared/proto/cline/models"
-import { fromProtobufModelInfo, toProtobufModelInfo } from "@/shared/proto-conversions/models/typeConversion"
+import { toProtobufModelInfo } from "@/shared/proto-conversions/models/typeConversion"
 import type { GlobalStateAndSettings } from "@/shared/storage/state-keys"
 
 export interface ProviderCatalogController {
@@ -94,7 +97,7 @@ function toProtobufModels(models: ReadonlyMap<string, ModelInfo>): Record<string
 	return result
 }
 
-function toCommittedModelSelectionProto(selection: ModelSelection | undefined): CommittedModelSelection | undefined {
+function toCommittedModelSelectionProto(selection: ResolvedModelSelection | undefined): CommittedModelSelection | undefined {
 	if (!selection) {
 		return undefined
 	}
@@ -241,17 +244,37 @@ export function toProviderConfigPatch(protoPatch: WriteProviderConfigPatch | und
 	}
 }
 
+function toSelectionOverrides(overrides: ModelOverridesProto | undefined): ModelSelectionOverrides | undefined {
+	if (!overrides) {
+		return undefined
+	}
+	return {
+		...(overrides.name !== undefined ? { name: overrides.name } : {}),
+		...(overrides.maxTokens !== undefined ? { maxTokens: overrides.maxTokens } : {}),
+		...(overrides.contextWindow !== undefined ? { contextWindow: overrides.contextWindow } : {}),
+		...(overrides.maxInputTokens !== undefined ? { maxInputTokens: overrides.maxInputTokens } : {}),
+		...(overrides.capabilities.length > 0 ? { capabilities: [...overrides.capabilities] } : {}),
+		...(overrides.supportsVision !== undefined ? { supportsVision: overrides.supportsVision } : {}),
+		...(overrides.supportsAttachments !== undefined ? { supportsAttachments: overrides.supportsAttachments } : {}),
+		...(overrides.supportsReasoning !== undefined ? { supportsReasoning: overrides.supportsReasoning } : {}),
+		...(overrides.inputPrice !== undefined ? { inputPrice: overrides.inputPrice } : {}),
+		...(overrides.outputPrice !== undefined ? { outputPrice: overrides.outputPrice } : {}),
+		...(overrides.cacheReadsPrice !== undefined ? { cacheReadsPrice: overrides.cacheReadsPrice } : {}),
+		...(overrides.cacheWritesPrice !== undefined ? { cacheWritesPrice: overrides.cacheWritesPrice } : {}),
+		...(overrides.temperature !== undefined ? { temperature: overrides.temperature } : {}),
+		...(overrides.apiFormat !== undefined ? { apiFormat: overrides.apiFormat } : {}),
+		...(overrides.isR1FormatRequired !== undefined ? { isR1FormatRequired: overrides.isR1FormatRequired } : {}),
+	}
+}
+
 export function toModelSelection(request: CommitModelSelectionRequest, providerId: ProviderId): ModelSelection {
 	const modelId = request.modelId.trim()
 	if (!modelId) {
 		throw new Error("model_id is required")
 	}
-	if (!request.modelInfo) {
-		throw new Error("model_info is required")
-	}
 	return {
 		providerId,
 		modelId,
-		modelInfo: fromProtobufModelInfo(request.modelInfo),
+		overrides: toSelectionOverrides(request.overrides),
 	}
 }

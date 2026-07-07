@@ -122,6 +122,25 @@ message OpenRouterModelInfo {
   optional ApiFormat api_format = 16;
 }
 
+// User-authored per-model metadata stored in models.json.
+message ModelOverrides {
+  optional string name = 1;
+  optional int64 max_tokens = 2;
+  optional int64 context_window = 3;
+  optional int64 max_input_tokens = 4;
+  repeated string capabilities = 5;
+  optional bool supports_vision = 6;
+  optional bool supports_attachments = 7;
+  optional bool supports_reasoning = 8;
+  optional double input_price = 9;
+  optional double output_price = 10;
+  optional double cache_reads_price = 11;
+  optional double cache_writes_price = 12;
+  optional double temperature = 13;
+  optional ApiFormat api_format = 14;
+  optional bool is_r1_format_required = 15;
+}
+
 // Shared response message for model information
 message OpenRouterCompatibleModelInfo {
   map<string, OpenRouterModelInfo> models = 1;
@@ -260,7 +279,7 @@ message CommitModelSelectionRequest {
   string provider_id = 1;
   string mode = 2;
   string model_id = 3;
-  OpenRouterModelInfo model_info = 4;
+  optional ModelOverrides overrides = 4;
 }
 
 message ClineRecommendedModel {

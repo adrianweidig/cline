@@ -1,5 +1,13 @@
+import {
+	ensureCustomProvidersLoadedSync,
+	readModelsFileSync,
+	resolveModelsRegistryPath,
+	type StoredModelEntry,
+	writeModelsFileSync,
+} from "@cline/core"
 import { getGeneratedModelsForProvider, MODEL_COLLECTIONS_BY_PROVIDER_ID } from "@cline/llms"
 import { type ApiConfiguration, type ApiProvider, type ModelInfo, openAiModelInfoSafeDefaults } from "@shared/api"
+import { ApiFormat } from "@shared/proto/cline/models"
 import { getProviderModelIdKey } from "@shared/storage/provider-keys"
 import { isSecretKey, isSettingsKey, type SecretKey, type SettingsKey } from "@shared/storage/state-keys"
 import { StateManager } from "@/core/storage/StateManager"
@@ -9,11 +17,13 @@ import type {
 	EffectiveProviderConfig,
 	Mode,
 	ModelSelection,
+	ModelSelectionOverrides,
 	ProviderConfigChange,
 	ProviderConfigChangeListener,
 	ProviderConfigPatch,
 	ProviderConfigStore,
 	ProviderId,
+	ResolvedModelSelection,
 } from "./contracts"
 import { buildEffectiveProviderConfig } from "./effective-config"
 import { applyHostModelInfoOverrides } from "./host-overrides"
@@ -113,7 +123,7 @@ const modelInfoKeysByProvider: Partial<Record<string, ModelInfoKeys>> = {
 // provider+mode so that switching between providers that share the same
 // `*ModeApiModelId` key does not combine one provider's model id with
 // another provider's model info.
-const selectionMemory = new Map<string, ModelSelection>()
+const selectionMemory = new Map<string, ResolvedModelSelection>()
 
 function providerKey(providerId: ProviderId): string {
 	return providerId.toString()
@@ -172,7 +182,165 @@ function fallbackModelInfo(modelId: string): ModelInfo {
 	return { ...openAiModelInfoSafeDefaults, name: modelId }
 }
 
-function readKnownModelInfoForProvider(providerId: ProviderId, modelId: string): ModelInfo | undefined {
+function toStoredCapabilities(capabilities: readonly string[] | undefined): StoredModelEntry["capabilities"] | undefined {
+	if (!capabilities) {
+		return undefined
+	}
+	const next: NonNullable<StoredModelEntry["capabilities"]> = []
+	for (const capability of capabilities) {
+		switch (capability) {
+			case "temperature":
+			case "reasoning":
+			case "images":
+			case "files":
+			case "streaming":
+			case "tools":
+			case "prompt-cache":
+			case "reasoning-effort":
+			case "computer-use":
+			case "global-endpoint":
+			case "structured_output":
+				next.push(capability)
+		}
+	}
+	return next.length > 0 ? next : undefined
+}
+
+function toStoredApiFormat(apiFormat: ModelInfo["apiFormat"]): StoredModelEntry["apiFormat"] | undefined {
+	switch (apiFormat) {
+		case ApiFormat.R1_CHAT:
+			return "r1"
+		case ApiFormat.OPENAI_RESPONSES:
+			return "openai-responses"
+		case ApiFormat.OPENAI_CHAT:
+			return "default"
+		default:
+			return undefined
+	}
+}
+
+function fromStoredApiFormat(apiFormat: StoredModelEntry["apiFormat"]): ModelInfo["apiFormat"] | undefined {
+	switch (apiFormat) {
+		case "r1":
+			return ApiFormat.R1_CHAT
+		case "openai-responses":
+			return ApiFormat.OPENAI_RESPONSES
+		case "default":
+			return ApiFormat.OPENAI_CHAT
+		default:
+			return undefined
+	}
+}
+
+function readModelsState() {
+	return readModelsFileSync(resolveModelsRegistryPath(getProviderSettingsManager()))
+}
+
+function toStoredModelEntry(overrides: ModelSelectionOverrides): StoredModelEntry {
+	const capabilities = toStoredCapabilities(overrides.capabilities)
+	const apiFormat = toStoredApiFormat(overrides.apiFormat)
+	return {
+		...(overrides.name !== undefined ? { name: overrides.name } : {}),
+		...(overrides.maxTokens !== undefined ? { maxTokens: overrides.maxTokens } : {}),
+		...(overrides.contextWindow !== undefined ? { contextWindow: overrides.contextWindow } : {}),
+		...(overrides.maxInputTokens !== undefined ? { maxInputTokens: overrides.maxInputTokens } : {}),
+		...(capabilities !== undefined ? { capabilities } : {}),
+		...(overrides.supportsVision !== undefined ? { supportsVision: overrides.supportsVision } : {}),
+		...(overrides.supportsAttachments !== undefined ? { supportsAttachments: overrides.supportsAttachments } : {}),
+		...(overrides.supportsReasoning !== undefined ? { supportsReasoning: overrides.supportsReasoning } : {}),
+		...(overrides.inputPrice !== undefined ? { inputPrice: overrides.inputPrice } : {}),
+		...(overrides.outputPrice !== undefined ? { outputPrice: overrides.outputPrice } : {}),
+		...(overrides.cacheReadsPrice !== undefined ? { cacheReadsPrice: overrides.cacheReadsPrice } : {}),
+		...(overrides.cacheWritesPrice !== undefined ? { cacheWritesPrice: overrides.cacheWritesPrice } : {}),
+		...(overrides.temperature !== undefined ? { temperature: overrides.temperature } : {}),
+		...(apiFormat !== undefined ? { apiFormat } : {}),
+		...(overrides.isR1FormatRequired !== undefined ? { isR1FormatRequired: overrides.isR1FormatRequired } : {}),
+	}
+}
+
+function toSelectionOverrides(entry: StoredModelEntry | undefined): ModelSelectionOverrides | undefined {
+	if (!entry) {
+		return undefined
+	}
+	return {
+		...(entry.name !== undefined ? { name: entry.name } : {}),
+		...(entry.maxTokens !== undefined ? { maxTokens: entry.maxTokens } : {}),
+		...(entry.contextWindow !== undefined ? { contextWindow: entry.contextWindow } : {}),
+		...(entry.maxInputTokens !== undefined ? { maxInputTokens: entry.maxInputTokens } : {}),
+		...(entry.capabilities !== undefined ? { capabilities: [...entry.capabilities] } : {}),
+		...(entry.supportsVision !== undefined ? { supportsVision: entry.supportsVision } : {}),
+		...(entry.supportsAttachments !== undefined ? { supportsAttachments: entry.supportsAttachments } : {}),
+		...(entry.supportsReasoning !== undefined ? { supportsReasoning: entry.supportsReasoning } : {}),
+		...(entry.inputPrice !== undefined ? { inputPrice: entry.inputPrice } : {}),
+		...(entry.outputPrice !== undefined ? { outputPrice: entry.outputPrice } : {}),
+		...(entry.cacheReadsPrice !== undefined ? { cacheReadsPrice: entry.cacheReadsPrice } : {}),
+		...(entry.cacheWritesPrice !== undefined ? { cacheWritesPrice: entry.cacheWritesPrice } : {}),
+		...(entry.temperature !== undefined ? { temperature: entry.temperature } : {}),
+		...(entry.apiFormat !== undefined && fromStoredApiFormat(entry.apiFormat) !== undefined
+			? { apiFormat: fromStoredApiFormat(entry.apiFormat) }
+			: {}),
+		...(entry.isR1FormatRequired !== undefined ? { isR1FormatRequired: entry.isR1FormatRequired } : {}),
+	}
+}
+
+function readModelOverrides(providerId: ProviderId, modelId: string): ModelSelectionOverrides | undefined {
+	return toSelectionOverrides(readModelsState().providers[providerSettingsProviderId(providerId)]?.models?.[modelId])
+}
+
+function writeModelOverrides(providerId: ProviderId, modelId: string, overrides: ModelSelectionOverrides | undefined): void {
+	const modelsPath = resolveModelsRegistryPath(getProviderSettingsManager())
+	const state = readModelsFileSync(modelsPath)
+	const provider = providerSettingsProviderId(providerId)
+	const providerEntry = state.providers[provider] ?? {}
+	const nextModels = { ...(providerEntry.models ?? {}) }
+	if (overrides) {
+		nextModels[modelId] = toStoredModelEntry(overrides)
+	} else {
+		delete nextModels[modelId]
+	}
+	writeModelsFileSync(modelsPath, {
+		...state,
+		providers: {
+			...state.providers,
+			[provider]: {
+				...providerEntry,
+				models: nextModels,
+			},
+		},
+	})
+	ensureCustomProvidersLoadedSync(getProviderSettingsManager())
+}
+
+function applyModelOverrides(modelInfo: ModelInfo, overrides: ModelSelectionOverrides | undefined): ModelInfo {
+	if (!overrides) {
+		return modelInfo
+	}
+	const next: ModelInfo = { ...modelInfo }
+	if (overrides.name !== undefined) next.name = overrides.name
+	if (overrides.maxTokens !== undefined) next.maxTokens = overrides.maxTokens
+	if (overrides.contextWindow !== undefined) next.contextWindow = overrides.contextWindow
+	if (overrides.maxInputTokens !== undefined)
+		(next as ModelInfo & { maxInputTokens?: number }).maxInputTokens = overrides.maxInputTokens
+	if (overrides.supportsVision !== undefined) next.supportsImages = overrides.supportsVision
+	if (overrides.supportsReasoning !== undefined) next.supportsReasoning = overrides.supportsReasoning
+	if (overrides.inputPrice !== undefined) next.inputPrice = overrides.inputPrice
+	if (overrides.outputPrice !== undefined) next.outputPrice = overrides.outputPrice
+	if (overrides.cacheReadsPrice !== undefined) next.cacheReadsPrice = overrides.cacheReadsPrice
+	if (overrides.cacheWritesPrice !== undefined) next.cacheWritesPrice = overrides.cacheWritesPrice
+	if (overrides.temperature !== undefined) next.temperature = overrides.temperature
+	if (overrides.apiFormat !== undefined) next.apiFormat = overrides.apiFormat
+	if (overrides.capabilities !== undefined) {
+		next.supportsImages = overrides.capabilities.includes("images") || overrides.capabilities.includes("vision")
+		next.supportsPromptCache = overrides.capabilities.includes("prompt-cache")
+		next.supportsReasoning = overrides.capabilities.includes("reasoning")
+	}
+	if (overrides.isR1FormatRequired) {
+		next.apiFormat = ApiFormat.R1_CHAT
+	}
+	return next
+}
+
+function readBaseModelInfoForProvider(providerId: ProviderId, modelId: string): ModelInfo | undefined {
 	const sdkProviderId = toSdkProviderId(providerId)
 	const generatedModelInfo = getGeneratedModelsForProvider(sdkProviderId)[modelId]
 	if (isModelInfo(generatedModelInfo)) {
@@ -201,17 +369,29 @@ function readKnownModelInfoForProvider(providerId: ProviderId, modelId: string):
 	return undefined
 }
 
-function readSelectionFromProviderSettings(providerId: ProviderId): ModelSelection | undefined {
+function resolveSelection(selection: ModelSelection): ResolvedModelSelection {
+	const overrides = selection.overrides ?? readModelOverrides(selection.providerId, selection.modelId)
+	return {
+		...selection,
+		overrides,
+		modelInfo: applyModelOverrides(
+			readBaseModelInfoForProvider(selection.providerId, selection.modelId) ?? fallbackModelInfo(selection.modelId),
+			overrides,
+		),
+	}
+}
+
+export function resolveRuntimeModelSelection(providerId: ProviderId, modelId: string): ResolvedModelSelection {
+	return resolveSelection({ providerId, modelId })
+}
+
+function readSelectionFromProviderSettings(providerId: ProviderId): ResolvedModelSelection | undefined {
 	const modelId = readProviderSettingsModelId(providerId)
 	if (!modelId) {
 		return undefined
 	}
 
-	return {
-		providerId,
-		modelId,
-		modelInfo: readKnownModelInfoForProvider(providerId, modelId) ?? fallbackModelInfo(modelId),
-	}
+	return resolveSelection({ providerId, modelId })
 }
 
 function writeStateKey(key: SecretKey | SettingsKey, value: unknown): void {
@@ -389,7 +569,7 @@ function syncedModes(mode: Mode): Mode[] {
 	return StateManager.get().getGlobalSettingsKey("planActSeparateModelsSetting") ? [mode] : ["plan", "act"]
 }
 
-function writeSelectionToState(providerId: ProviderId, mode: Mode, selection: ModelSelection): void {
+function writeSelectionToState(providerId: ProviderId, mode: Mode, selection: ResolvedModelSelection): void {
 	const updates: Partial<Record<SettingsKey, unknown>> = {}
 	for (const targetMode of syncedModes(mode)) {
 		updates[getModelIdKey(providerId, targetMode)] = selection.modelId
@@ -411,7 +591,7 @@ function writeSelectionToProviderSettings(providerId: ProviderId, selection: Mod
 	saveProviderSettings(providerId, next)
 }
 
-function readSelectionFromState(providerId: ProviderId, mode: Mode): ModelSelection | undefined {
+function readSelectionFromState(providerId: ProviderId, mode: Mode): ResolvedModelSelection | undefined {
 	const apiConfiguration = StateManager.get().getApiConfiguration()
 	const modelId = apiConfiguration[getModelIdKey(providerId, mode)]
 	const modelInfoKey = getModelInfoKey(providerId, mode)
@@ -423,7 +603,7 @@ function readSelectionFromState(providerId: ProviderId, mode: Mode): ModelSelect
 		if (typeof modelId !== "string" || modelId.length === 0 || !isModelInfo(modelInfo)) {
 			return providerSettingsSelection
 		}
-		return { providerId, modelId, modelInfo }
+		return resolveSelection({ providerId, modelId })
 	}
 
 	const activeProvider = mode === "plan" ? apiConfiguration.planModeApiProvider : apiConfiguration.actModeApiProvider
@@ -464,7 +644,7 @@ export function createProviderConfigStore(): ProviderConfigStore {
 			return { ...buildEffectiveProviderConfig(providerId) }
 		},
 
-		readSelection(providerId: ProviderId, mode: Mode): ModelSelection | undefined {
+		readSelection(providerId: ProviderId, mode: Mode): ResolvedModelSelection | undefined {
 			return readSelectionFromState(providerId, mode)
 		},
 
@@ -482,9 +662,13 @@ export function createProviderConfigStore(): ProviderConfigStore {
 		},
 
 		commitSelection(providerId: ProviderId, mode: Mode, selection: ModelSelection): void {
-			writeSelectionToState(providerId, mode, selection)
 			writeSelectionToProviderSettings(providerId, selection)
-			emit({ kind: "selection", providerId, mode, selection })
+			if (selection.overrides !== undefined) {
+				writeModelOverrides(providerId, selection.modelId, selection.overrides)
+			}
+			const resolvedSelection = resolveSelection({ ...selection, providerId })
+			writeSelectionToState(providerId, mode, resolvedSelection)
+			emit({ kind: "selection", providerId, mode, selection: resolvedSelection })
 		},
 	}
 }
