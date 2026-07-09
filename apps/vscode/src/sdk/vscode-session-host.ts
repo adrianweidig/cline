@@ -35,6 +35,7 @@ import { getDistinctId } from "@/services/logging/distinctId"
 import type { McpHub } from "@/services/mcp/McpHub"
 import { Logger } from "@/shared/services/Logger"
 import type { SdkSessionHost } from "./session-host"
+import { getEffectiveTerminalExecutionMode } from "./vscode-terminal-execution-mode"
 import { createVscodeExtraTools } from "./vscode-runtime-builder"
 
 export interface VscodeSessionHostOptions {
@@ -109,11 +110,11 @@ export class VscodeSessionHost implements SdkSessionHost {
 					const inputWithRemoteConfig = remoteConfigIntegration
 						? await remoteConfigIntegration.applyToStartSessionInput(input)
 						: input
-					const terminalExecutionMode = StateManager.get().getGlobalStateKey("vscodeTerminalExecutionMode")
+					const requestedTerminalExecutionMode = StateManager.get().getGlobalStateKey("vscodeTerminalExecutionMode")
 					const extraTools = await createVscodeExtraTools(options.mcpHub, {
 						cwd: inputWithRemoteConfig.config.cwd,
 						getTerminalManager: options.getTerminalManager,
-						vscodeTerminalExecutionMode: terminalExecutionMode,
+						vscodeTerminalExecutionMode: getEffectiveTerminalExecutionMode(requestedTerminalExecutionMode),
 					})
 					return {
 						...inputWithRemoteConfig,
