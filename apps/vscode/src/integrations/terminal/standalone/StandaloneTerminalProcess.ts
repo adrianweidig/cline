@@ -9,6 +9,7 @@
  */
 
 import { telemetryService } from "@services/telemetry"
+import { getHostProvidedShell } from "@utils/shell"
 import { ChildProcess, spawn } from "child_process"
 import { EventEmitter } from "events"
 import { Logger } from "@/shared/services/Logger"
@@ -329,6 +330,12 @@ export class StandaloneTerminalProcess extends EventEmitter<TerminalProcessEvent
 	 * @returns The default shell path
 	 */
 	private getDefaultShell(): string {
+		// A shell explicitly forwarded by the host IDE (e.g. the JetBrains
+		// terminal profile) takes precedence over the OS defaults.
+		const hostShell = getHostProvidedShell()
+		if (hostShell) {
+			return hostShell
+		}
 		if (process.platform === "win32") {
 			return process.env.COMSPEC || "cmd.exe"
 		}
