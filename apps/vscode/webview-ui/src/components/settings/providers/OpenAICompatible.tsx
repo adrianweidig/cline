@@ -1,21 +1,19 @@
 import { TooltipContent, TooltipTrigger } from "@radix-ui/react-tooltip"
-import { azureOpenAiDefaultApiVersion, openAiModelInfoSafeDefaults } from "@shared/api"
+import type { OpenAiCompatibleModelInfo } from "@shared/api"
+import { openAiModelInfoSafeDefaults } from "@shared/api"
 import { OpenAiModelsRequest } from "@shared/proto/cline/models"
 import type { Mode } from "@shared/storage/types"
 import { VSCodeButton, VSCodeCheckbox } from "@vscode/webview-ui-toolkit/react"
-import { useCallback, useEffect, useRef, useState } from "react"
+import { useCallback, useEffect, useState } from "react"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Tooltip } from "@/components/ui/tooltip"
-import { useExtensionState } from "@/context/ExtensionStateContext"
 import { ModelsServiceClient } from "@/services/grpc-client"
 import { getAsVar, VSC_DESCRIPTION_FOREGROUND } from "@/utils/vscStyles"
 import { ApiKeyField } from "../common/ApiKeyField"
-import { BaseUrlField } from "../common/BaseUrlField"
 import { DebouncedTextField } from "../common/DebouncedTextField"
 import { ModelInfoView } from "../common/ModelInfoView"
 import ReasoningEffortSelector from "../ReasoningEffortSelector"
 import { parsePrice } from "../utils/pricingUtils"
-import { useApiConfigurationHandlers } from "../utils/useApiConfigurationHandlers"
-import { useProviderApiKeyField } from "../utils/useProviderApiKeyField"
 import { useOpenAiCompatibleSettings } from "./useOpenAiCompatibleSettings"
 
 /**
@@ -37,20 +35,20 @@ export const OpenAICompatibleProvider = ({
 	isPopup,
 	currentMode,
 }: OpenAICompatibleProviderProps) => {
-	const { remoteConfigSettings } = useExtensionState()
-	const { handleFieldChange } = useApiConfigurationHandlers()
+	// const remoteConfigSettings = useRemoteConfigSettings(true) // TODO
+	const hasRemoteConfigBaseUrl = false // TODO remoteConfigSettings?.openAiBaseUrl !== undefined
+	const hasRemoteConfigHeaders = false // TODO remoteConfigSettings?.openAiHeaders !== undefined
 
-	const [modelConfigurationSelected, setModelConfigurationSelected] = useState(false)
-	const [isCustomOpenAiModelEntryVisible, setIsCustomOpenAiModelEntryVisible] = useState(false)
+	const [isCustomModelEntryVisible, setIsCustomOpenAiModelEntryVisible] = useState(false)
 	const [availableOpenAiModels, setAvailableOpenAiModels] = useState<string[]>([])
 	const [isRefreshingOpenAiModels, setIsRefreshingOpenAiModels] = useState(false)
 	const [openAiModelsError, setOpenAiModelsError] = useState<string | undefined>(undefined)
+
 	const handleProviderConfigWriteError = useCallback((fieldName: string, error: unknown) => {
 		console.error(`Failed to update OpenAI Compatible ${fieldName}:`, error)
 	}, [])
 
 	const {
-		apiConfiguration,
 		config,
 		selectedModelId,
 		selectedModelInfo,
@@ -60,113 +58,25 @@ export const OpenAICompatibleProvider = ({
 		saveSelectedModelSettings,
 	} = useOpenAiCompatibleSettings({ providerId, currentMode, onError: handleProviderConfigWriteError })
 
-	// Only the built-in "openai" provider stores its API key in the legacy
-	// ApiConfiguration field; custom providers keep it in their per-provider
-	// config (available only as a masked length), so there is no plaintext key
-	// to seed the model-refresh request with.
-	const legacyOpenAiApiKey = providerId === "openai" ? apiConfiguration?.openAiApiKey || "" : ""
-	const latestOpenAiBaseUrlRef = useRef(config?.baseUrl || "")
-	const latestOpenAiApiKeyRef = useRef(legacyOpenAiApiKey)
-	const openAiModelsRequestRef = useRef(0)
-
 	useEffect(() => {
-		latestOpenAiBaseUrlRef.current = config?.baseUrl || ""
-	}, [config?.baseUrl])
-
-	useEffect(() => {
-		latestOpenAiApiKeyRef.current = legacyOpenAiApiKey
-	}, [legacyOpenAiApiKey])
-
-	// Debounced function to refresh OpenAI models (prevents excessive API calls while typing)
-	const debounceTimerRef = useRef<NodeJS.Timeout | null>(null)
-
-	useEffect(() => {
-		return () => {
-			if (debounceTimerRef.current) {
-				clearTimeout(debounceTimerRef.current)
-			}
-		}
-	}, [])
-
-	const refreshOpenAiModels = useCallback(async (baseUrl?: string, apiKey?: string) => {
-		const trimmedBaseUrl = baseUrl?.trim()
-		const requestId = openAiModelsRequestRef.current + 1
-		openAiModelsRequestRef.current = requestId
-
-		if (!trimmedBaseUrl) {
-			setAvailableOpenAiModels([])
-			setOpenAiModelsError(undefined)
-			setIsRefreshingOpenAiModels(false)
-			return
-		}
-
 		setIsRefreshingOpenAiModels(true)
 		setOpenAiModelsError(undefined)
-
-		try {
-			const response = await ModelsServiceClient.refreshOpenAiModels(
-				OpenAiModelsRequest.create({
-					baseUrl: trimmedBaseUrl,
-					apiKey,
-				}),
-			)
-
-			if (openAiModelsRequestRef.current === requestId) {
-				setAvailableOpenAiModels(response.values)
-			}
-		} catch (error) {
-			console.error("Failed to refresh OpenAI models:", error)
-			if (openAiModelsRequestRef.current === requestId) {
-				setAvailableOpenAiModels([])
-				setOpenAiModelsError(error instanceof Error ? error.message : String(error))
-			}
-		} finally {
-			if (openAiModelsRequestRef.current === requestId) {
+		fetchOpenAiModels(config?.baseUrl, config?.apiKey)
+			.then((models) => {
+				setAvailableOpenAiModels(models)
+			})
+			.catch((error) => {
+				console.error("Failed to refresh OpenAI models:", error)
+				setOpenAiModelsError("Failed to refresh models. Please check your base URL and API key.")
+			})
+			.finally(() => {
 				setIsRefreshingOpenAiModels(false)
-			}
-		}
-	}, [])
+			})
+	}, [config?.baseUrl, config?.apiKey])
 
-	const debouncedRefreshOpenAiModels = useCallback(
-		(baseUrl?: string, apiKey?: string) => {
-			if (debounceTimerRef.current) {
-				clearTimeout(debounceTimerRef.current)
-			}
+	const headerEntries = Object.entries(config?.headers ?? {})
 
-			debounceTimerRef.current = setTimeout(() => {
-				void refreshOpenAiModels(baseUrl, apiKey)
-			}, 500)
-		},
-		[refreshOpenAiModels],
-	)
-
-	useEffect(() => {
-		void refreshOpenAiModels(config?.baseUrl, latestOpenAiApiKeyRef.current)
-	}, [config?.baseUrl, refreshOpenAiModels])
-
-	const formatOptionalModelNumber = useCallback((value: number | undefined): string => {
-		return typeof value === "number" && Number.isFinite(value) && value !== -1 ? value.toString() : ""
-	}, [])
-
-	const parseOptionalModelNumber = useCallback((value: string): number => {
-		const trimmed = value.trim()
-		if (!trimmed) {
-			return -1
-		}
-		const parsed = Number(trimmed)
-		return Number.isFinite(parsed) ? parsed : -1
-	}, [])
-
-	const { savedApiKeyMask, handleApiKeyChange } = useProviderApiKeyField({
-		apiKeyLength: config?.apiKeyLength,
-		canWrite: config !== undefined,
-		onApiKeyChange: (apiKey) => {
-			latestOpenAiApiKeyRef.current = apiKey
-			debouncedRefreshOpenAiModels(latestOpenAiBaseUrlRef.current, apiKey)
-		},
-		providerName: "OpenAI Compatible",
-		write: writeProviderSettings,
-	})
+	const modelInfo: OpenAiCompatibleModelInfo = { ...(selectedModelInfo ?? openAiModelInfoSafeDefaults) }
 
 	return (
 		<div>
@@ -175,23 +85,15 @@ export const OpenAICompatibleProvider = ({
 					<div className="mb-2.5">
 						<div className="flex items-center gap-2 mb-1">
 							<span style={{ fontWeight: 500 }}>Base URL</span>
-							{remoteConfigSettings?.openAiBaseUrl !== undefined && (
-								<i className="codicon codicon-lock text-description text-sm" />
-							)}
+							{hasRemoteConfigBaseUrl && <i className="codicon codicon-lock text-description text-sm" />}
 						</div>
 						<DebouncedTextField
-							disabled={remoteConfigSettings?.openAiBaseUrl !== undefined}
-							initialValue={config?.baseUrl || ""}
+							disabled={hasRemoteConfigBaseUrl}
+							initialValue={config?.baseUrl ?? ""}
 							onChange={(value) => {
-								if (!config) {
-									return
-								}
-
-								latestOpenAiBaseUrlRef.current = value
-								void writeProviderSettings({ baseUrl: value }).catch((error) =>
-									handleProviderConfigWriteError("base URL", error),
-								)
-								debouncedRefreshOpenAiModels(value, latestOpenAiApiKeyRef.current)
+								writeProviderSettings({ baseUrl: value }).catch((error) => {
+									handleProviderConfigWriteError("base URL", error)
+								})
 							}}
 							placeholder={"Enter base URL..."}
 							style={{ width: "100%", marginBottom: 10 }}
@@ -199,15 +101,28 @@ export const OpenAICompatibleProvider = ({
 						/>
 					</div>
 				</TooltipTrigger>
-				<TooltipContent hidden={remoteConfigSettings?.openAiBaseUrl === undefined}>
-					This setting is managed by your organization's remote configuration
-				</TooltipContent>
+				{hasRemoteConfigBaseUrl && (
+					<TooltipContent>This setting is managed by your organization's remote configuration</TooltipContent>
+				)}
 			</Tooltip>
 
-			<ApiKeyField initialValue={savedApiKeyMask} onChange={handleApiKeyChange} providerName="OpenAI Compatible" />
+			<ApiKeyField
+				initialValue={config?.apiKey ?? ""}
+				onChange={(value: string) => {
+					writeProviderSettings({ apiKey: value }).catch((error) => {
+						handleProviderConfigWriteError("API key", error)
+					})
+				}}
+				providerName="OpenAI Compatible"
+			/>
 
-			{isRefreshingOpenAiModels && <div role="status">Loading models…</div>}
+			<span style={{ fontWeight: 500 }}>
+				Model ID
+				{isRefreshingOpenAiModels && <span className="opacity-50"> Refreshing...</span>}
+			</span>
+
 			{openAiModelsError && <div role="alert">{openAiModelsError}</div>}
+
 			{availableOpenAiModels.length > 0 ? (
 				<div
 					style={{
@@ -216,14 +131,10 @@ export const OpenAICompatibleProvider = ({
 						gap: 8,
 						marginBottom: 10,
 					}}>
-					<label htmlFor="openai-compatible-model-picker">
-						<span style={{ fontWeight: 500 }}>Model ID</span>
-					</label>
-					<select
+					<Select
 						aria-label="Model ID"
-						id="openai-compatible-model-picker"
-						onChange={(event) => {
-							const modelId = event.target.value
+						onValueChange={(value) => {
+							const modelId = value
 							if (modelId === "__custom__") {
 								setIsCustomOpenAiModelEntryVisible(true)
 								return
@@ -232,21 +143,24 @@ export const OpenAICompatibleProvider = ({
 							setIsCustomOpenAiModelEntryVisible(false)
 							selectModel(modelId)
 						}}
-						style={{ width: "100%" }}
-						value={selectedModelId && availableOpenAiModels.includes(selectedModelId) ? selectedModelId : ""}>
-						{selectedModelId && !availableOpenAiModels.includes(selectedModelId) && (
-							<option value="">{selectedModelId} (not in current list)</option>
-						)}
-						{availableOpenAiModels.map((modelId) => (
-							<option key={modelId} value={modelId}>
-								{modelId}
-							</option>
-						))}
-						<option value="__custom__">Use custom model ID…</option>
-					</select>
+						value={selectedModelId || undefined}>
+						<SelectTrigger className="w-full">
+							<SelectValue placeholder="Select a model" />
+						</SelectTrigger>
+						<SelectContent>
+							{selectedModelId && !availableOpenAiModels.includes(selectedModelId) && (
+								<SelectItem value={selectedModelId}>{selectedModelId} (not in current list)</SelectItem>
+							)}
+							{availableOpenAiModels.map((modelId) => (
+								<SelectItem key={modelId} value={modelId}>
+									{modelId}
+								</SelectItem>
+							))}
+							<SelectItem value="__custom__">Use custom model ID…</SelectItem>
+						</SelectContent>
+					</Select>
 
-					{(isCustomOpenAiModelEntryVisible ||
-						(selectedModelId && !availableOpenAiModels.includes(selectedModelId))) && (
+					{(isCustomModelEntryVisible || (selectedModelId && !availableOpenAiModels.includes(selectedModelId))) && (
 						<DebouncedTextField
 							initialValue={selectedModelId || ""}
 							onChange={(value) => selectModel(value)}
@@ -261,152 +175,103 @@ export const OpenAICompatibleProvider = ({
 					initialValue={selectedModelId || ""}
 					onChange={(value) => selectModel(value)}
 					placeholder={"Enter Model ID..."}
-					style={{ width: "100%", marginBottom: 10 }}>
-					<span style={{ fontWeight: 500 }}>Model ID</span>
-				</DebouncedTextField>
-			)}
-
-			{/* OpenAI Compatible Custom Headers */}
-			{(() => {
-				const headers = config?.headers ?? {}
-				const headerEntries = Object.entries(headers)
-
-				return (
-					<div style={{ marginBottom: 10 }}>
-						<div
-							style={{
-								display: "flex",
-								justifyContent: "space-between",
-								alignItems: "center",
-							}}>
-							<Tooltip>
-								<TooltipTrigger>
-									<div className="flex items-center gap-2">
-										<span style={{ fontWeight: 500 }}>Custom Headers</span>
-										{remoteConfigSettings?.openAiHeaders !== undefined && (
-											<i className="codicon codicon-lock text-description text-sm" />
-										)}
-									</div>
-								</TooltipTrigger>
-								<TooltipContent hidden={remoteConfigSettings?.openAiHeaders === undefined}>
-									This setting is managed by your organization's remote configuration
-								</TooltipContent>
-							</Tooltip>
-							<VSCodeButton
-								disabled={remoteConfigSettings?.openAiHeaders !== undefined}
-								onClick={() => {
-									const currentHeaders = { ...headers }
-									const headerCount = Object.keys(currentHeaders).length
-									const newKey = `header${headerCount + 1}`
-									currentHeaders[newKey] = ""
-									void writeProviderSettings({ headers: currentHeaders }).catch((error) =>
-										handleProviderConfigWriteError("headers", error),
-									)
-								}}>
-								Add Header
-							</VSCodeButton>
-						</div>
-
-						<div>
-							{headerEntries.map(([key, value], index) => (
-								<div key={index} style={{ display: "flex", gap: 5, marginTop: 5 }}>
-									<DebouncedTextField
-										disabled={remoteConfigSettings?.openAiHeaders !== undefined}
-										initialValue={key}
-										onChange={(newValue) => {
-											const currentHeaders = config?.headers ?? {}
-											if (newValue && newValue !== key) {
-												const { [key]: _, ...rest } = currentHeaders
-												void writeProviderSettings({
-													headers: {
-														...rest,
-														[newValue]: value,
-													},
-												}).catch((error) => handleProviderConfigWriteError("headers", error))
-											}
-										}}
-										placeholder="Header name"
-										style={{ width: "40%" }}
-									/>
-									<DebouncedTextField
-										disabled={remoteConfigSettings?.openAiHeaders !== undefined}
-										initialValue={value}
-										onChange={(newValue) => {
-											void writeProviderSettings({
-												headers: {
-													...(config?.headers ?? {}),
-													[key]: newValue,
-												},
-											}).catch((error) => handleProviderConfigWriteError("headers", error))
-										}}
-										placeholder="Header value"
-										style={{ width: "40%" }}
-									/>
-									<VSCodeButton
-										appearance="secondary"
-										disabled={remoteConfigSettings?.openAiHeaders !== undefined}
-										onClick={() => {
-											const { [key]: _, ...rest } = config?.headers ?? {}
-											void writeProviderSettings({ headers: rest }).catch((error) =>
-												handleProviderConfigWriteError("headers", error),
-											)
-										}}>
-										Remove
-									</VSCodeButton>
-								</div>
-							))}
-						</div>
-					</div>
-				)
-			})()}
-
-			{remoteConfigSettings?.azureApiVersion !== undefined ? (
-				<Tooltip>
-					<TooltipTrigger>
-						<BaseUrlField
-							disabled={true}
-							initialValue={apiConfiguration?.azureApiVersion}
-							label="Set Azure API version"
-							onChange={(value) => handleFieldChange("azureApiVersion", value)}
-							placeholder={`Default: ${azureOpenAiDefaultApiVersion}`}
-							showLockIcon={true}
-						/>
-					</TooltipTrigger>
-					<TooltipContent>This setting is managed by your organization's remote configuration</TooltipContent>
-				</Tooltip>
-			) : (
-				<BaseUrlField
-					initialValue={apiConfiguration?.azureApiVersion}
-					label="Set Azure API version"
-					onChange={(value) => handleFieldChange("azureApiVersion", value)}
-					placeholder={`Default: ${azureOpenAiDefaultApiVersion}`}
+					style={{ width: "100%", marginBottom: 10 }}
 				/>
 			)}
 
-			<VSCodeCheckbox
-				checked={apiConfiguration?.azureIdentity || false}
-				onChange={(e: any) => {
-					const isChecked = e.target.checked === true
-					return handleFieldChange("azureIdentity", isChecked)
-				}}>
-				Use Azure Identity Authentication
-			</VSCodeCheckbox>
+			{/* OpenAI Compatible Custom Headers */}
+			<div style={{ marginBottom: 10 }}>
+				<div
+					style={{
+						display: "flex",
+						justifyContent: "space-between",
+						alignItems: "center",
+					}}>
+					<Tooltip>
+						<TooltipTrigger>
+							<div className="flex items-center gap-2">
+								<span style={{ fontWeight: 500 }}>Custom Headers</span>
+								{hasRemoteConfigHeaders && <i className="codicon codicon-lock text-description text-sm" />}
+							</div>
+						</TooltipTrigger>
+						{hasRemoteConfigHeaders && (
+							<TooltipContent>This setting is managed by your organization's remote configuration</TooltipContent>
+						)}
+					</Tooltip>
+					<VSCodeButton
+						disabled={hasRemoteConfigHeaders}
+						onClick={() => {
+							const headerCount = headerEntries.length
+							const newKey = `header${headerCount + 1}`
+							void writeProviderSettings({ headers: { ...(config?.headers ?? {}), [newKey]: "" } }).catch((error) =>
+								handleProviderConfigWriteError("headers", error),
+							)
+						}}>
+						Add Header
+					</VSCodeButton>
+				</div>
+
+				<div>
+					{headerEntries.map(([oldKey, oldValue], index) => (
+						<div key={index} style={{ display: "flex", gap: 5, marginTop: 5 }}>
+							<DebouncedTextField
+								disabled={hasRemoteConfigHeaders}
+								initialValue={oldKey}
+								onChange={(value) => {
+									const newKey = value.trim()
+									if (!newKey || newKey === oldKey) return
+
+									const currentHeaders = config?.headers ?? {}
+									if (newKey in currentHeaders) return
+
+									const { [oldKey]: currentValue, ...rest } = currentHeaders
+									void writeProviderSettings({
+										headers: {
+											...rest,
+											[newKey]: currentValue ?? oldValue,
+										},
+									}).catch((error) => handleProviderConfigWriteError("headers", error))
+								}}
+								placeholder="Header name"
+								style={{ width: "40%" }}
+							/>
+							<DebouncedTextField
+								disabled={hasRemoteConfigHeaders}
+								initialValue={oldValue}
+								onChange={(newValue) => {
+									void writeProviderSettings({
+										headers: {
+											...(config?.headers ?? {}),
+											[oldKey]: newValue,
+										},
+									}).catch((error) => handleProviderConfigWriteError("headers", error))
+								}}
+								placeholder="Header value"
+								style={{ width: "40%" }}
+							/>
+							<VSCodeButton
+								appearance="secondary"
+								disabled={hasRemoteConfigHeaders}
+								onClick={() => {
+									const { [oldKey]: _, ...rest } = config?.headers ?? {}
+									void writeProviderSettings({ headers: rest }).catch((error) =>
+										handleProviderConfigWriteError("headers", error),
+									)
+								}}>
+								Remove
+							</VSCodeButton>
+						</div>
+					))}
+				</div>
+			</div>
 
 			<div
-				onClick={() => setModelConfigurationSelected((val) => !val)}
 				style={{
 					color: getAsVar(VSC_DESCRIPTION_FOREGROUND),
 					display: "flex",
 					margin: "10px 0",
-					cursor: "pointer",
 					alignItems: "center",
 				}}>
-				<span
-					className={`codicon ${modelConfigurationSelected ? "codicon-chevron-down" : "codicon-chevron-right"}`}
-					style={{
-						marginRight: "4px",
-					}}
-				/>
 				<span
 					style={{
 						fontWeight: 700,
@@ -416,120 +281,82 @@ export const OpenAICompatibleProvider = ({
 				</span>
 			</div>
 
-			{modelConfigurationSelected && (
-				<>
-					<VSCodeCheckbox
-						checked={!!selectedModelSettings?.supportsImages}
-						onChange={(e: any) => {
-							const isChecked = e.target.checked === true
-							const modelInfo = selectedModelSettings
-								? { ...selectedModelSettings }
-								: { ...openAiModelInfoSafeDefaults }
-							modelInfo.supportsImages = isChecked
-							saveSelectedModelSettings(modelInfo)
-						}}>
-						Supports Images
-					</VSCodeCheckbox>
+			<VSCodeCheckbox
+				checked={Boolean(selectedModelSettings?.supportsImages)}
+				onChange={(e: any) => {
+					const isChecked = e.target.checked === true
+					modelInfo.supportsImages = isChecked
+					saveSelectedModelSettings(modelInfo)
+				}}>
+				Supports Images
+			</VSCodeCheckbox>
 
-					<VSCodeCheckbox
-						checked={!!selectedModelSettings?.isR1FormatRequired}
-						onChange={(e: any) => {
-							const isChecked = e.target.checked === true
-							let modelInfo = selectedModelSettings
-								? { ...selectedModelSettings }
-								: { ...openAiModelInfoSafeDefaults }
-							modelInfo = { ...modelInfo, isR1FormatRequired: isChecked }
+			<VSCodeCheckbox
+				checked={Boolean(selectedModelSettings?.isR1FormatRequired)}
+				onChange={(e: any) => {
+					const isChecked = e.target.checked === true
+					modelInfo.isR1FormatRequired = isChecked
+					saveSelectedModelSettings(modelInfo)
+				}}>
+				Enable R1 messages format
+			</VSCodeCheckbox>
 
-							saveSelectedModelSettings(modelInfo)
-						}}>
-						Enable R1 messages format
-					</VSCodeCheckbox>
+			<div style={{ display: "flex", gap: 10, marginTop: "5px" }}>
+				<DebouncedTextField
+					initialValue={modelInfo?.contextWindow?.toString() ?? ""}
+					onChange={(value) => {
+						modelInfo.contextWindow = Number(value)
+						saveSelectedModelSettings(modelInfo)
+					}}
+					style={{ flex: 1 }}>
+					<span style={{ fontWeight: 500 }}>Context Window Size</span>
+				</DebouncedTextField>
 
-					<div style={{ display: "flex", gap: 10, marginTop: "5px" }}>
-						<DebouncedTextField
-							initialValue={
-								selectedModelSettings?.contextWindow
-									? selectedModelSettings.contextWindow.toString()
-									: (openAiModelInfoSafeDefaults.contextWindow?.toString() ?? "")
-							}
-							onChange={(value) => {
-								const modelInfo = selectedModelSettings
-									? { ...selectedModelSettings }
-									: { ...openAiModelInfoSafeDefaults }
-								modelInfo.contextWindow = Number(value)
-								saveSelectedModelSettings(modelInfo)
-							}}
-							style={{ flex: 1 }}>
-							<span style={{ fontWeight: 500 }}>Context Window Size</span>
-						</DebouncedTextField>
+				<DebouncedTextField
+					initialValue={formatOptionalNumber(selectedModelSettings?.maxTokens)}
+					onChange={(value) => {
+						modelInfo.maxTokens = parseOptionalNumber(value)
+						saveSelectedModelSettings(modelInfo)
+					}}
+					placeholder="not set"
+					style={{ flex: 1 }}>
+					<span style={{ fontWeight: 500 }}>Max Output Tokens</span>
+				</DebouncedTextField>
+			</div>
 
-						<DebouncedTextField
-							initialValue={formatOptionalModelNumber(selectedModelSettings?.maxTokens)}
-							onChange={(value) => {
-								const modelInfo = selectedModelSettings
-									? { ...selectedModelSettings }
-									: { ...openAiModelInfoSafeDefaults }
-								modelInfo.maxTokens = parseOptionalModelNumber(value)
-								saveSelectedModelSettings(modelInfo)
-							}}
-							placeholder="not set"
-							style={{ flex: 1 }}>
-							<span style={{ fontWeight: 500 }}>Max Output Tokens</span>
-						</DebouncedTextField>
-					</div>
+			<div style={{ display: "flex", gap: 10, marginTop: "5px" }}>
+				<DebouncedTextField
+					initialValue={modelInfo?.inputPrice?.toString() ?? ""}
+					onChange={(value) => {
+						modelInfo.inputPrice = parsePrice(value, openAiModelInfoSafeDefaults.inputPrice ?? 0)
+						saveSelectedModelSettings(modelInfo)
+					}}
+					style={{ flex: 1 }}>
+					<span style={{ fontWeight: 500 }}>Input Price / 1M tokens</span>
+				</DebouncedTextField>
 
-					<div style={{ display: "flex", gap: 10, marginTop: "5px" }}>
-						<DebouncedTextField
-							initialValue={
-								selectedModelSettings?.inputPrice
-									? selectedModelSettings.inputPrice.toString()
-									: (openAiModelInfoSafeDefaults.inputPrice?.toString() ?? "")
-							}
-							onChange={(value) => {
-								const modelInfo = selectedModelSettings
-									? { ...selectedModelSettings }
-									: { ...openAiModelInfoSafeDefaults }
-								modelInfo.inputPrice = parsePrice(value, openAiModelInfoSafeDefaults.inputPrice ?? 0)
-								saveSelectedModelSettings(modelInfo)
-							}}
-							style={{ flex: 1 }}>
-							<span style={{ fontWeight: 500 }}>Input Price / 1M tokens</span>
-						</DebouncedTextField>
+				<DebouncedTextField
+					initialValue={modelInfo?.outputPrice?.toString() ?? ""}
+					onChange={(value) => {
+						modelInfo.outputPrice = parsePrice(value, openAiModelInfoSafeDefaults.outputPrice ?? 0)
+						saveSelectedModelSettings(modelInfo)
+					}}
+					style={{ flex: 1 }}>
+					<span style={{ fontWeight: 500 }}>Output Price / 1M tokens</span>
+				</DebouncedTextField>
+			</div>
 
-						<DebouncedTextField
-							initialValue={
-								selectedModelSettings?.outputPrice
-									? selectedModelSettings.outputPrice.toString()
-									: (openAiModelInfoSafeDefaults.outputPrice?.toString() ?? "")
-							}
-							onChange={(value) => {
-								const modelInfo = selectedModelSettings
-									? { ...selectedModelSettings }
-									: { ...openAiModelInfoSafeDefaults }
-								modelInfo.outputPrice = parsePrice(value, openAiModelInfoSafeDefaults.outputPrice ?? 0)
-								saveSelectedModelSettings(modelInfo)
-							}}
-							style={{ flex: 1 }}>
-							<span style={{ fontWeight: 500 }}>Output Price / 1M tokens</span>
-						</DebouncedTextField>
-					</div>
-
-					<div style={{ display: "flex", gap: 10, marginTop: "5px" }}>
-						<DebouncedTextField
-							initialValue={formatOptionalModelNumber(selectedModelSettings?.temperature)}
-							onChange={(value) => {
-								const modelInfo = selectedModelSettings
-									? { ...selectedModelSettings }
-									: { ...openAiModelInfoSafeDefaults }
-								modelInfo.temperature = parseOptionalModelNumber(value)
-								saveSelectedModelSettings(modelInfo)
-							}}
-							placeholder="not set">
-							<span style={{ fontWeight: 500 }}>Temperature</span>
-						</DebouncedTextField>
-					</div>
-				</>
-			)}
+			<div style={{ display: "flex", gap: 10, marginTop: "5px" }}>
+				<DebouncedTextField
+					initialValue={formatOptionalNumber(selectedModelSettings?.temperature)}
+					onChange={(value) => {
+						modelInfo.temperature = parseOptionalNumber(value)
+						saveSelectedModelSettings(modelInfo)
+					}}
+					placeholder="not set">
+					<span style={{ fontWeight: 500 }}>Temperature</span>
+				</DebouncedTextField>
+			</div>
 
 			<p
 				style={{
@@ -562,4 +389,37 @@ export const OpenAICompatibleProvider = ({
 			)}
 		</div>
 	)
+}
+
+const formatOptionalNumber = (value: number | undefined): string => {
+	return typeof value === "number" && Number.isFinite(value) && value !== -1 ? value.toString() : ""
+}
+
+const parseOptionalNumber = (value: string): number => {
+	const trimmed = value.trim()
+	if (!trimmed) {
+		return -1
+	}
+	const parsed = Number(trimmed)
+	return Number.isFinite(parsed) ? parsed : -1
+}
+
+async function fetchOpenAiModels(baseUrl?: string, apiKey?: string): Promise<string[]> {
+	const trimmedBaseUrl = baseUrl?.trim()
+	const trimmedApiKey = apiKey?.trim()
+	if (!trimmedBaseUrl || !trimmedApiKey) {
+		return []
+	}
+	try {
+		const response = await ModelsServiceClient.refreshOpenAiModels(
+			OpenAiModelsRequest.create({
+				baseUrl: trimmedBaseUrl,
+				apiKey: trimmedApiKey,
+			}),
+		)
+		return response.values
+	} catch (error) {
+		console.error("Failed to refresh OpenAI models:", error)
+		throw error
+	}
 }
