@@ -184,10 +184,7 @@ export function toProviderModelsResponse(
 	})
 }
 
-export function toRedactedProviderConfigResponse(
-	config: EffectiveProviderConfig,
-	store?: ProviderConfigStore,
-): ProviderConfigResponse {
+export function toProviderConfigResponse(config: EffectiveProviderConfig, store?: ProviderConfigStore): ProviderConfigResponse {
 	return ProviderConfigResponse.create({
 		providerId: config.providerId,
 		baseUrl: config.baseUrl,

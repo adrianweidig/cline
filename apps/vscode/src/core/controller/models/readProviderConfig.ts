@@ -1,6 +1,6 @@
 import { StringRequest } from "@/shared/proto/cline/common"
 import { ProviderConfigResponse } from "@/shared/proto/cline/models"
-import { type ProviderCatalogController, parseProviderIdRequest, toRedactedProviderConfigResponse } from "./providerCatalogShared"
+import { type ProviderCatalogController, parseProviderIdRequest, toProviderConfigResponse } from "./providerCatalogShared"
 
 export async function readProviderConfig(
 	controller: ProviderCatalogController,
@@ -8,5 +8,5 @@ export async function readProviderConfig(
 ): Promise<ProviderConfigResponse> {
 	const providerId = parseProviderIdRequest(request.value, "value")
 	const store = controller.getProviderConfigStore()
-	return toRedactedProviderConfigResponse(store.read(providerId), store)
+	return toProviderConfigResponse(store.read(providerId), store)
 }

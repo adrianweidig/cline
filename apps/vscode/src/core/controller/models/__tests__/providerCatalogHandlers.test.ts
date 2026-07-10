@@ -144,7 +144,7 @@ describe("provider model catalog handlers", () => {
 		expect(catalog.resolveModels).toHaveBeenCalledWith(providerId, { forceRefresh: true })
 	})
 
-	it("readProviderConfig redacts secrets", async () => {
+	it("readProviderConfig returns the API key but redacts auth tokens", async () => {
 		const { readProviderConfig } = await import("../readProviderConfig")
 		const providerId = parseProviderId("cline")
 		const store = makeStore({
@@ -161,14 +161,16 @@ describe("provider model catalog handlers", () => {
 			providerId: "cline",
 			baseUrl: "https://api.example.com/v1",
 			apiKeyLength: "SECRET_SENTINEL_API_KEY".length,
+			apiKey: "SECRET_SENTINEL_API_KEY",
 			hasAccessToken: true,
 			hasRefreshToken: true,
 			accountId: "acct-1",
 		})
-		expect(JSON.stringify(response)).not.toContain("SECRET_SENTINEL")
+		expect(JSON.stringify(response)).not.toContain("SECRET_SENTINEL_ACCESS")
+		expect(JSON.stringify(response)).not.toContain("SECRET_SENTINEL_REFRESH")
 	})
 
-	it("writeProviderConfig writes a patch and returns redacted updated config", async () => {
+	it("writeProviderConfig writes a patch and returns the updated API key", async () => {
 		const { writeProviderConfig } = await import("../writeProviderConfig")
 		const providerId = parseProviderId("ollama")
 		const updatedConfig: EffectiveProviderConfig = {
@@ -188,8 +190,10 @@ describe("provider model catalog handlers", () => {
 			apiKey: "SECRET_SENTINEL_OLLAMA",
 			baseUrl: "http://localhost:11434/v1",
 		})
-		expect(response.apiKeyLength).toBe("SECRET_SENTINEL_OLLAMA".length)
-		expect(JSON.stringify(response)).not.toContain("SECRET_SENTINEL")
+		expect(response).toMatchObject({
+			apiKey: "SECRET_SENTINEL_OLLAMA",
+			apiKeyLength: "SECRET_SENTINEL_OLLAMA".length,
+		})
 	})
 
 	it("writeProviderConfig can explicitly clear headers", async () => {

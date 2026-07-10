@@ -59,9 +59,9 @@ service ModelsService {
   rpc resolveProviderModels(ResolveProviderModelsRequest) returns (ProviderModelsResponse);
   // Resolves model metadata for a provider/model without refreshing model lists
   rpc resolveModelInfo(ResolveModelInfoRequest) returns (ResolveModelInfoResponse);
-  // Reads redacted effective provider configuration
+  // Reads effective provider configuration
   rpc readProviderConfig(StringRequest) returns (ProviderConfigResponse);
-  // Writes provider configuration fields and returns redacted effective configuration
+  // Writes provider configuration fields and returns effective configuration
   rpc writeProviderConfig(WriteProviderConfigRequest) returns (ProviderConfigResponse);
   // Commits a mode-specific model selection atomically with its model metadata
   rpc commitModelSelection(CommitModelSelectionRequest) returns (Empty);
